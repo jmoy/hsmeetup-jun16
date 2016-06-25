@@ -11,7 +11,7 @@ setting in the cabal file.
 
 The programs are to be invoked as
 
-  <progname> <deg> <red> <infile> <outfile>
+    <progname> <deg> <red> <infile> <outfile>
 
 where `deg` is the degrees of rotation, `red` is the percentage
 by which the red channel is to be emphasized, `infile` and `outfile`
