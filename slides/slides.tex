@@ -1,0 +1,316 @@
+
+\documentclass{beamer}
+\usetheme{CambridgeUS}
+\usepackage{minted}
+
+\title{Efficient Numerical Code in Haskell}
+\author{Jyotirmoy Bhattacharya}
+\institute[AUD]{Ambedkar University Delhi}
+\date[Jun '16]{Delhi NCR Haskell Meetup, June~2016}
+\begin{document}
+
+\begin{frame}
+  \maketitle
+\end{frame}
+
+\begin{frame}[fragile]
+  \frametitle{About}
+  \begin{itemize}
+  \item Email: \verb+jyotirmoy@jyotirmoy.net+
+  \item Website: \url{https://www.jyotirmoy.net}
+  \item GitHub: \url{https://github.com/jmoy}
+  \end{itemize}
+\end{frame}
+
+\begin{frame}[fragile=singleslide]
+  \frametitle{Lists: The Good}
+  \begin{block}{The List datatype}
+    \begin{minted}{haskell}
+data List a = Empty
+            | Node a (List a)
+    \end{minted}
+  \end{block}
+    \begin{itemize}
+    \item Lazy links can represent infinite and
+      self-referential structures:
+      \begin{minted}{haskell}
+fib = 1:1:zipWith (+) fib (tail fib)
+      \end{minted}
+    \item Lazy data can support modularity:
+      \begin{minted}{haskell}
+filter (even . fst) $ map (\i->(i,i^2)) [1..]       
+      \end{minted}
+    \item Updates can share representation with old values:
+      \begin{minted}{haskell}
+x = "cake"
+y = 'b':tail x
+\end{minted}
+    \end{itemize}
+\end{frame}
+
+\begin{frame}
+  \frametitle{Lists: The Bad}
+  \begin{itemize}
+  \item Access to the $n$-th elements in $O(n)$.
+  \item High memory overhead and poor data locality.
+  \item Pointer chasing for traversal.
+  \item Data and links must be forced before use.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}[fragile]
+  \frametitle{Sieve of Eratosthenes (Python)}
+\begin{minted}{python}
+import numpy as np
+def count_primes(n):
+  "Count no. of primes smaller than n"
+  v = np.full(n,True,np.bool)
+  # We want to set v[i] = False for non-primes
+  v[0] = v[1] = False
+
+  for p in range(n):
+    if v[p]:
+      # Found a prime
+      # Mark all its multiples as non-prime
+      for k in range(p*p,n,p):
+        v[k] = False
+  return np.count_nonzero(v)
+\end{minted}
+\end{frame}
+
+\begin{frame}[fragile]{The \texttt{vector} package}
+  \begin{itemize}
+  \item Module \mintinline{haskell}|Data.Vector|.
+    Array of heap-allocated values.
+  \item Module \mintinline{haskell}|Data.Vector.Unboxed|.
+    Array of unboxed values.
+  \item Module \mintinline{haskell}|Data.Vector.Storable|.
+    Array allocated in memory that can be passed to foreign functions.
+  \end{itemize}
+\end{frame}
+\begin{frame}[fragile]
+  \frametitle{Sieve of Eratosthenes (Haskell)}
+  \begin{minted}{haskell}
+import qualified Data.Vector.Unboxed as V
+import Data.Vector.Unboxed ((//),(!))
+countPrimes n = V.length $ V.filter id $ loop 2 mask0
+  where
+    mask0 = (V.replicate n True) // [(0,False),(1,False)]
+    loop p mask 
+      | p == n = mask
+      | not (mask ! p) = loop (p+1) mask
+      | otherwise = loop (p+1) mask'
+        where
+          mask' = mask // [(k,False)|k<-[p*p,p*p+p..(n-1)]]
+
+  \end{minted}
+\end{frame}
+
+\begin{frame}[fragile]
+  \frametitle{The \texttt{ST} Monad}
+  \begin{itemize}
+  \item A value of type \mintinline{haskell}|(ST s a)| is a computation which
+    transforms a state of type \mintinline{haskell}|s| and
+    additionally produces a value of type
+    \mintinline{haskell}|a|.
+  \item The state is not accessible to library users. So
+    they cannot duplicate it.
+  \item Action \mintinline{haskell}|newSTRef| creates a new
+    \emph{mutable variable} within a state to which values
+    can be written through \mintinline{haskell}|writeSTRef|
+    and \mintinline{haskell}|modifySTRef| and read through
+    \mintinline{haskell}|readSTRef|.
+   \item The
+    \mintinline{haskell}|runST| function takes a computation
+    in \mintinline{haskell}|ST| and gives us the value
+    produced. This is what allows us to embed
+    \mintinline{haskell}|ST| computation in pure programs.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}[fragile]
+  \frametitle{Stupid \texttt{ST} example}
+\begin{minted}{haskell}
+import Control.Monad.ST
+import Data.STRef
+import Control.Monad (forM_)
+
+lengthJB::[a]->Int
+lengthJB xs = runST $ do
+  ctr <- newSTRef 0
+  forM_ xs $ \_ -> modifySTRef ctr (+ 1)
+  readSTRef ctr
+\end{minted}
+\end{frame}
+
+\begin{frame}[fragile]
+  \frametitle{Simulating a bank}
+  \begin{block}{The External Interface}
+    \begin{minted}{haskell}
+type Name = String
+type Ledger = [(Name,Double)]
+data Transaction = Transaction
+                      Name    -- From
+                      Name    -- To
+                      Double  -- Amount 
+
+-- How do we implement this efficiently?
+simulateBank::Ledger->[Transaction]->Ledger 
+    \end{minted}
+  \end{block}
+\end{frame}
+  
+\begin{frame}[fragile]
+    \frametitle{Simulating a bank (contd.)}
+    \begin{minted}{haskell}
+-- The state of a bank
+type Bank s = HashMap Name (STRef s Double)
+-- Create a bank reflecting a given ledger
+mkBank :: [(Name,Double)] -> ST s (Bank s)
+-- Modify the state of a bank to reflect a transaction
+transact :: Bank s -> Transaction -> ST s ()
+-- Turn the state of the bank into a ledger
+readLedger :: Bank s -> ST s Ledger
+
+simulateBank::Ledger -> [Transaction] -> Ledger
+simulateBank ledger ts = runST $ do
+  b <- mkBank ledger
+  mapM_ (transact b) ts
+  readLedger b
+
+\end{minted}
+\end{frame}
+
+\begin{frame}[fragile]
+    \frametitle{Simulating a bank (contd.)}
+    \begin{minted}{haskell}
+mkBank ledger = do
+  let (n,as) = unzip ledger
+  vs <- mapM newSTRef as
+  return $ fromList $ zip n vs
+
+transact b (Transaction cFrom cTo amt) = do
+      modifySTRef' (b ! cFrom) (subtract amt)
+      modifySTRef' (b ! cTo) (+ amt)
+
+readLedger b = do
+  let (n,v) = unzip $ toList b
+  as <- mapM readSTRef v
+  return $ zip n as
+  \end{minted}
+\end{frame}
+
+\begin{frame}[fragile]
+  \frametitle{The \texttt{ST} Monad (continued)}
+      \begin{itemize}
+      \item The type of \mintinline{haskell}|runST| is
+    \begin{minted}{haskell}
+runST :: (forall s. ST s a) -> a
+    \end{minted}
+    This is so that references to mutable variables cannot
+    escape a \mintinline{haskell}|runST| and the computation
+    encapsulated by it really is pure.
+
+    \item Neither 
+      \begin{minted}{haskell}
+runST $ newSTRef 0
+      \end{minted}
+      nor 
+      \begin{minted}{haskell}
+\p -> runST $ readSTRef p
+      \end{minted}
+      are accepted by the typechecker.
+      \end{itemize}
+\end{frame}
+
+\begin{frame}[fragile]
+  \frametitle{Mutable Vectors}
+  \begin{itemize}
+  \item The \texttt{vector} package provides mutable vectors
+    (\mintinline{haskell}|MVector|) which can be created,
+    accessed and destructively modified in the \mintinline{haskell}|ST|
+    monad (also variants for the \mintinline{haskell}|IO| monad).
+  \item Like immutable vectors there are unboxed and
+    storable variants.
+  \item Conversion between mutable and immutable vectors is
+    possible, but may copy the vector
+    \begin{minted}{haskell}
+freeze :: MVector s a -> ST s (Vector a) 
+thaw :: Vector a -> ST s (MVector s a)
+    \end{minted}
+  \end{itemize}
+\end{frame}
+\begin{frame}[fragile]
+  \frametitle{Sieve of Eratosthenes (again)}
+{\small
+  \begin{minted}{haskell}
+import qualified Data.Vector.Unboxed as VI
+import qualified Data.Vector.Unboxed.Mutable as V
+countPrimes::Int->Int
+countPrimes n
+  = VI.length $ VI.filter id $ mask
+  where
+    mask = VI.create mkMask
+    mkMask::ST s (V.MVector s Bool)
+    mkMask = do
+      v <- V.replicate n True
+      V.write v 0 False
+      V.write v 1 False
+      forM_ [2..(n-1)] $ \p -> do
+        b <- V.read v p
+        when b $
+          forM_ [p*p,p*p+p..(n-1)] $ \i ->
+            V.write v i False
+      return v
+  \end{minted}
+}
+\end{frame}
+\begin{frame}[fragile]
+  \frametitle{REPA: REgular PArallel arrays}
+  \begin{itemize}
+  \item Key data type
+    \begin{minted}{haskell}
+      Array r sh e
+    \end{minted}
+    \item \mintinline{haskell}|r| can be
+      \mintinline{haskell}|D|, \mintinline{haskell}|U|
+      \mintinline{haskell}|F| and others.
+    \item \mintinline{haskell}|sh| is a type of the shape
+      class \mintinline{haskell}|Shape|. Example types
+      \begin{minted}{haskell}
+        Z :. Int :. Int
+      \end{minted}
+      Example values
+      \begin{minted}{haskell}
+        Z :. 0 :. 1
+      \end{minted}
+    \item Moving from a delayed to manifest represenation is
+      under the programmer's control:
+      \mintinline{haskell}|computeP|,  \mintinline{haskell}|computeS|.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}[fragile]
+\frametitle{Parallelization for free}
+\small
+\begin{verbatim}
+ubuntu@ip-172-31-40-69:~/examples-repa⟫ /usr/bin/time \
+./dist/build/examples-repa/examples-repa \
+    80 20 Wave.jpg WaveEC2.jpg +RTS -N1
+9.59user 0.11system 0:09.70elapsed 100%CPU 
+(0avgtext+0avgdata 556080maxresident)k
+0inputs+43824outputs (0major+2447minor)pagefaults 0swaps
+
+ubuntu@ip-172-31-40-69:~/examples-repa⟫ /usr/bin/time \
+    ./dist/build/examples-repa/examples-repa \
+    80 20 Wave.jpg WaveEC2.jpg +RTS -N4
+14.09user 0.14system 0:04.66elapsed 305%CPU 
+(0avgtext+0avgdata 559488maxresident)k
+0inputs+43824outputs (0major+2910minor)pagefaults 0swaps
+\end{verbatim}
+\end{frame}
+\end{document}
+
+% Local Variables:
+% TeX-command-extra-options: "-shell-escape"
+% End:
